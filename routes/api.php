@@ -57,7 +57,7 @@ Route::prefix('v1')->group(function () {
        // Route::get('/suggest-drugs', [InteractionController::class, 'suggest']);
         //Route::post('/check-interaction', [DrugInteractionController::class, 'checkInteraction']);
     });
-
+    Route::get('pharmacies', [PharmacyController::class, 'index']);
     Route::get('search', [SearchController::class, 'search']);
     // search routes
     Route::middleware(['auth:sanctum'])->group(function () {
@@ -79,7 +79,7 @@ Route::prefix('v1')->group(function () {
         Route::get('orders/{id}', [OrderController::class, 'show'])->name('orders.show');
 
         // Pharmacy routes
-        Route::get('pharmacies', [PharmacyController::class, 'index']);
+        
         Route::get('pharmacies/nearby', [PharmacyController::class, 'nearby']);
         Route::get('pharmacies/my', [PharmacyController::class, 'myPharmacy']);
         Route::get('pharmacies/{id}', [PharmacyController::class, 'show']);
