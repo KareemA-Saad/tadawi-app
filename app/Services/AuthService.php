@@ -42,7 +42,7 @@ class AuthService
             'email' => $data['email'],
             'password' => Hash::make($data['password']),
             'phone_number' => $data['phone_number'] ?? null,
-            'role' => 'patient', // Default role, will be updated later
+            'role' => null, // No default role, user will choose later
             'status' => 'pending',
         ]);
 
@@ -113,13 +113,15 @@ class AuthService
             } else {
                 // Create new user
                 $user = User::create([
-                    'name' => $googleUser->getName(),
+                    'name' => $googleUser->getName() ?: 'Google User',
                     'email' => $googleUser->getEmail(),
                     'google_id' => $googleUser->getId(),
-                    'role' => 'patient', // Default role
+                    'role' => null, // No default role, user will choose later
                     'status' => 'active',
                     'email_verified_at' => Carbon::now(),
                     'profile_picture_path' => $googleUser->getAvatar(),
+                    // password is null for Google users
+                    // phone_number is null for Google users - can be collected later
                 ]);
             }
 
@@ -129,6 +131,7 @@ class AuthService
                 'user' => $user,
                 'token' => $token,
                 'requires_verification' => false,
+                'needs_profile_completion' => $user->needsProfileCompletion(),
                 'message' => 'Google authentication successful.'
             ];
 
