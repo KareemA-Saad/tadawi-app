@@ -146,14 +146,15 @@ class CheckoutController extends Controller
         }
 
         $request->validate([
-            'order_id' => 'required|string',
+            'order_id' => 'required|string',           
+            'paypal_order_id' => 'required|string',    
             'payer_id' => 'required|string',
             'payment_id' => 'required|string'
         ]);
 
         try {
             // Verify payment with PayPal
-            $verification = $this->verifyPayPalPayment($request->order_id, $request->payer_id);
+            $verification = $this->verifyPayPalPayment($request->paypal_order_id, $request->payer_id);
             
             if (!$verification['success']) {
                 return response()->json([
@@ -292,7 +293,7 @@ class CheckoutController extends Controller
     /**
      * Verify PayPal payment
      */
-    protected function verifyPayPalPayment(string $orderId, string $payerId): array
+    protected function verifyPayPalPayment(string $paypalOrderId, string $payerId): array
     {
         try {
             $paypalConfig = config('payment.methods.paypal');
@@ -304,26 +305,82 @@ class CheckoutController extends Controller
                 ];
             }
 
-            // In real implementation, you would verify with PayPal API
-            // For now, we'll do a basic validation
-            if (empty($orderId) || empty($payerId)) {
+            // Get access token
+            $accessToken = $this->getPayPalAccessToken();
+            
+            if (!$accessToken) {
                 return [
                     'success' => false,
-                    'message' => 'Invalid payment data'
+                    'message' => 'Failed to get PayPal access token'
                 ];
             }
-
+            
+            // Verify order with PayPal
+            $baseUrl = $paypalConfig['sandbox'] ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
+            
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $accessToken,
+                'Content-Type' => 'application/json',
+            ])->get("{$baseUrl}/v2/checkout/orders/{$paypalOrderId}");
+            
+            if ($response->successful()) {
+                $orderData = $response->json();
+                
+                if ($orderData['status'] === 'COMPLETED') {
+                    return [
+                        'success' => true,
+                        'message' => 'PayPal payment verified',
+                        'order_data' => $orderData
+                    ];
+                }
+                
+                return [
+                    'success' => false,
+                    'message' => 'PayPal payment not completed. Status: ' . $orderData['status']
+                ];
+            }
+            
             return [
-                'success' => true,
-                'message' => 'Payment verified'
+                'success' => false,
+                'message' => 'Failed to verify PayPal payment'
             ];
 
         } catch (\Exception $e) {
             Log::error('PayPal verification error: ' . $e->getMessage());
             return [
                 'success' => false,
-                'message' => 'Payment verification failed'
+                'message' => 'Payment verification failed: ' . $e->getMessage()
             ];
+        }
+    }
+
+    /**
+     * Get PayPal access token
+     */
+    protected function getPayPalAccessToken(): ?string
+    {
+        try {
+            $paypalConfig = config('payment.methods.paypal');
+            $baseUrl = $paypalConfig['sandbox'] ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
+            
+            $response = Http::withBasicAuth(
+                $paypalConfig['client_id'],
+                $paypalConfig['client_secret']
+            )->asForm()->post("{$baseUrl}/v1/oauth2/token", [
+                'grant_type' => 'client_credentials'
+            ]);
+            
+            if ($response->successful()) {
+                $data = $response->json();
+                return $data['access_token'] ?? null;
+            }
+            
+            Log::error('PayPal access token error: ' . $response->body());
+            return null;
+            
+        } catch (\Exception $e) {
+            Log::error('PayPal access token exception: ' . $e->getMessage());
+            return null;
         }
     }
 
