@@ -117,6 +117,28 @@ class User extends Authenticatable
      */
     public function hasRole(string $role): bool
     {
-        return $this->role === $role;
+        return !is_null($this->role) && $this->role === $role;
+    }
+
+    /**
+     * Check if the user needs to complete their profile.
+     */
+    public function needsProfileCompletion(): bool
+    {
+        // Users without a role need to complete profile
+        if (is_null($this->role)) {
+            return true;
+        }
+        
+        // Google users without phone numbers need to complete profile
+        return $this->google_id && !$this->phone_number;
+    }
+
+    /**
+     * Check if user registered via Google OAuth.
+     */
+    public function isGoogleUser(): bool
+    {
+        return !is_null($this->google_id);
     }
 }
