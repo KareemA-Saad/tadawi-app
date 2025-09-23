@@ -22,16 +22,16 @@ class AlternativeSearchController extends Controller
     {
         $data = $request->validate([
             'name'   => 'required|string',
-            'lat'    => 'required|numeric',
-            'lng'    => 'required|numeric',
+            'lat'    => 'nullable|numeric',
+            'lng'    => 'nullable|numeric',
             'user_drugs' => 'array'
         ]);
 
         $medicine   = $data['name'];
-        $lat        = (float) $data['lat'];
-        $lng        = (float) $data['lng'];
+        $lat        = isset($data['lat']) ? (float) $data['lat'] : null;
+        $lng        = isset($data['lng']) ? (float) $data['lng'] : null;
         $userDrugs  = $data['user_drugs'] ?? [];
-        $radius     = 50; 
+        $radius     = 50; // km
 
         $results = collect();
         $unavailable = [];
@@ -45,32 +45,23 @@ class AlternativeSearchController extends Controller
             $dbMedicine = Medicine::whereRaw('LOWER(brand_name) = ?', [strtolower($alt)])->first();
 
             if ($dbMedicine) {
-                $haversine = "(6371 * acos(
-                    cos(radians(?)) 
-                    * cos(radians(pharmacy_profiles.latitude)) 
-                    * cos(radians(pharmacy_profiles.longitude) - radians(?)) 
-                    + sin(radians(?)) 
-                    * sin(radians(pharmacy_profiles.latitude))
-                ))";
-
-                $rows = DB::table('stock_batches')
+                $query = DB::table('stock_batches')
                     ->join('pharmacy_profiles', 'pharmacy_profiles.id', '=', 'stock_batches.pharmacy_id')
                     ->join('medicines', 'medicines.id', '=', 'stock_batches.medicine_id')
                     ->where('stock_batches.medicine_id', $dbMedicine->id)
                     ->where('stock_batches.quantity', '>=', 0)
-                    ->selectRaw("
-                        pharmacy_profiles.id,
-                        pharmacy_profiles.location as pharmacy_location,
-                        pharmacy_profiles.latitude,
-                        pharmacy_profiles.longitude,
-                        pharmacy_profiles.contact_info,
-                        stock_batches.medicine_id,
-                        medicines.brand_name as medicine_name,
-                        medicines.price,
-                        medicines.active_ingredient_id,
-                        SUM(stock_batches.quantity) as quantity,
-                        {$haversine} AS distance
-                    ", [$lat, $lng, $lat])
+                    ->select(
+                        'pharmacy_profiles.id',
+                        'pharmacy_profiles.location as pharmacy_location',
+                        'pharmacy_profiles.latitude',
+                        'pharmacy_profiles.longitude',
+                        'pharmacy_profiles.contact_info',
+                        'stock_batches.medicine_id',
+                        'medicines.brand_name as medicine_name',
+                        'medicines.price',
+                        'medicines.active_ingredient_id',
+                        DB::raw('SUM(stock_batches.quantity) as quantity')
+                    )
                     ->groupBy(
                         'pharmacy_profiles.id',
                         'pharmacy_profiles.location',
@@ -81,11 +72,24 @@ class AlternativeSearchController extends Controller
                         'medicines.brand_name',
                         'medicines.price',
                         'medicines.active_ingredient_id'
-                    )
-                    ->having('distance', '<=', $radius)
-                    ->orderBy('distance', 'asc')
-                    ->limit(10)
-                    ->get();
+                    );
+
+                // Only calculate distance if lat/lng is provided
+                if ($lat !== null && $lng !== null) {
+                    $haversine = "(6371 * acos(
+                        cos(radians(?)) 
+                        * cos(radians(pharmacy_profiles.latitude)) 
+                        * cos(radians(pharmacy_profiles.longitude) - radians(?)) 
+                        + sin(radians(?)) 
+                        * sin(radians(pharmacy_profiles.latitude))
+                    ))";
+
+                    $query->selectRaw("{$haversine} AS distance", [$lat, $lng, $lat])
+                          ->having('distance', '<=', $radius)
+                          ->orderBy('distance', 'asc');
+                }
+
+                $rows = $query->limit(10)->get();
 
                 if ($rows->isNotEmpty()) {
                     $results = $results->merge($rows);
@@ -103,8 +107,8 @@ class AlternativeSearchController extends Controller
         }
 
         // Transform results
-        $payload = $results->map(function ($row) {
-            return [
+        $payload = $results->map(function ($row) use ($lat, $lng) {
+            $result = [
                 'pharmacy_id'   => $row->id,
                 'pharmacy_location' => $row->pharmacy_location,
                 'latitude'      => (float) $row->latitude,
@@ -115,8 +119,14 @@ class AlternativeSearchController extends Controller
                 'price'         => $row->price,
                 'active_ingredient_id' => $row->active_ingredient_id,
                 'quantity'      => (int) $row->quantity,
-                'distance_km'   => round((float) $row->distance, 2),
             ];
+
+            // Include distance if calculated
+            if (isset($row->distance)) {
+                $result['distance_km'] = round((float) $row->distance, 2);
+            }
+
+            return $result;
         });
 
         return response()->json([
@@ -139,10 +149,10 @@ class AlternativeSearchController extends Controller
                 . "The user is already taking: " . implode(", ", $userDrugs) . ". "
                 . "Suggest the 5 most famous medicine alternatives available in Egypt that can replace {$medicine}. "
                 . "Do not include unsafe alternatives due to drug interactions. "
+                . "if medecine name is single character or number or un understood ignore it and return []. "
                 . "Return the answer strictly as a JSON array of medicine names like: "
                 . "[\"Alt1\", \"Alt2\", \"Alt3\", \"Alt4\", \"Alt5\"]. "
                 . "If no safe alternatives exist, return [].";
-
 
             $response = Http::timeout(15)->withHeaders([
                 'Content-Type' => 'application/json',

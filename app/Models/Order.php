@@ -402,8 +402,8 @@ class Order extends Model
      * Add prescription to order
      */
 
-    public function addPrescription(array $prescriptionData): bool
-    {
+    /*public function addPrescription(array $prescriptionData): bool
+    {   
         try {
             $this->prescriptionUploads()->create([
                 'file_path' => $prescriptionData['file_path'],
@@ -418,7 +418,7 @@ class Order extends Model
             Log::error('Failed to add prescription to order: ' . $e->getMessage());
             return false;
         }
-    }
+    }*/
 
 
     // ========================================
