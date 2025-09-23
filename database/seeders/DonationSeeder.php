@@ -19,23 +19,28 @@ class DonationSeeder extends Seeder
         $medicines = Medicine::all();
 
         $locations = [
-            'Cairo, Egypt',
+            'Nasr City, Cairo, Egypt',
+            'Maadi, Cairo, Egypt',
+            'Heliopolis, Cairo, Egypt',
             'Alexandria, Egypt',
-            'Giza, Egypt',
+            '6th of October City, Giza, Egypt',
+            'Sheikh Zayed, Giza, Egypt',
             'Luxor, Egypt',
             'Aswan, Egypt',
             'Port Said, Egypt',
             'Suez, Egypt',
             'Ismailia, Egypt',
-            'Tanta, Egypt',
-            'Mansoura, Egypt',
+            'Tanta, Gharbia, Egypt',
+            'Mansoura, Dakahlia, Egypt',
+            'Zagazig, Sharqia, Egypt',
+            'Assiut, Egypt',
         ];
 
-        // Create 25 donations
+        // Create 25 donations (all approved for donations-available endpoint)
         for ($i = 0; $i < 25; $i++) {
             $user = $users->random();
             $location = $locations[array_rand($locations)];
-            $verified = rand(0, 1) == 1;
+            $verified = true; // All donations are verified
 
             $donationDate = now()->subDays(rand(0, 60));
 
@@ -44,6 +49,8 @@ class DonationSeeder extends Seeder
                 'location' => $location,
                 'contact_info' => $this->getRandomContactInfo(),
                 'verified' => $verified,
+                'status' => Donation::STATUS_APPROVED, // Ensure all donations are approved
+                'sealed_confirmed' => true, // All donations have sealed confirmation
                 'created_at' => $donationDate,
                 'updated_at' => $donationDate,
             ]);
@@ -64,9 +71,22 @@ class DonationSeeder extends Seeder
                     'batch_num' => $batchNumber,
                 ]);
             }
+
+            // Add some sample photos for some donations (about 60% of donations have photos)
+            if (rand(1, 10) <= 6) {
+                $numPhotos = rand(1, 3);
+                for ($photoIndex = 0; $photoIndex < $numPhotos; $photoIndex++) {
+                    DB::table('donation_photos')->insert([
+                        'donation_id' => $donation->id,
+                        'photo_path' => 'donations/sample_medicine_' . ($photoIndex + 1) . '.jpg',
+                        'created_at' => $donationDate,
+                        'updated_at' => $donationDate,
+                    ]);
+                }
+            }
         }
 
-        // Create some recent donations
+        // Create some recent donations (also approved for consistency)
         for ($i = 0; $i < 8; $i++) {
             $user = $users->random();
             $location = $locations[array_rand($locations)];
@@ -75,7 +95,9 @@ class DonationSeeder extends Seeder
                 'user_id' => $user->id,
                 'location' => $location,
                 'contact_info' => $this->getRandomContactInfo(),
-                'verified' => false, // Recent donations not yet verified
+                'verified' => true, // Make these verified as well
+                'status' => Donation::STATUS_APPROVED, // Ensure all donations are approved
+                'sealed_confirmed' => true, // All donations have sealed confirmation
                 'created_at' => now()->subDays(rand(1, 7)), // Last week
                 'updated_at' => now()->subDays(rand(1, 7)),
             ]);
@@ -95,20 +117,38 @@ class DonationSeeder extends Seeder
                     'batch_num' => $batchNumber,
                 ]);
             }
+
+            // Add photos for recent donations (about 70% have photos since they're newer)
+            if (rand(1, 10) <= 7) {
+                $numPhotos = rand(1, 2);
+                $recentDate = now()->subDays(rand(1, 7));
+                for ($photoIndex = 0; $photoIndex < $numPhotos; $photoIndex++) {
+                    DB::table('donation_photos')->insert([
+                        'donation_id' => $donation->id,
+                        'photo_path' => 'donations/recent_medicine_' . ($photoIndex + 1) . '.jpg',
+                        'created_at' => $recentDate,
+                        'updated_at' => $recentDate,
+                    ]);
+                }
+            }
         }
     }
 
     private function getRandomContactInfo(): string
     {
         $contactOptions = [
-            'Phone: +20 10 1234 5678, Email: donor@email.com',
-            'Phone: +20 11 2345 6789, Available: 9 AM - 5 PM',
-            'Phone: +20 12 3456 7890, WhatsApp: Available',
-            'Email: contact@donor.com, Phone: +20 15 4567 8901',
-            'Phone: +20 10 9876 5432, Best time: Evening',
-            'Email: help@donor.org, Phone: +20 11 8765 4321',
-            'Phone: +20 12 7654 3210, Available: Weekends',
-            'Email: support@donor.net, Phone: +20 15 6543 2109',
+            'Phone: +20 10 1234 5678, Email: ahmed.donor@gmail.com, Available: 9 AM - 6 PM',
+            'Phone: +20 11 2345 6789, WhatsApp: +20 11 2345 6789, Best time: Morning',
+            'Phone: +20 12 3456 7890, Email: fatma.medicine@yahoo.com, Available weekdays',
+            'Phone: +20 15 4567 8901, WhatsApp: Available, Contact: Mohamed',
+            'Phone: +20 10 9876 5432, Email: sara.help@hotmail.com, Evening preferred',
+            'Phone: +20 11 8765 4321, Available: 10 AM - 4 PM, Contact: Omar',
+            'Phone: +20 12 7654 3210, WhatsApp: +20 12 7654 3210, Weekends available',
+            'Phone: +20 15 6543 2109, Email: nour.donate@gmail.com, Anytime',
+            'Phone: +20 10 5555 1111, WhatsApp: Available, Contact: Amira',
+            'Phone: +20 11 6666 2222, Email: hassan.med@outlook.com, Flexible timing',
+            'Phone: +20 12 7777 3333, Available: 8 AM - 8 PM, Contact: Yasmin',
+            'Phone: +20 15 8888 4444, WhatsApp: +20 15 8888 4444, Contact: Khaled',
         ];
 
         return $contactOptions[array_rand($contactOptions)];
