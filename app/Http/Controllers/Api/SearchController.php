@@ -9,28 +9,61 @@ use App\Models\Medicine;
 
 class SearchController extends Controller
 {
-    public function search(Request $request)
-    {
-        $data = $request->validate([
-            'name'   => 'required|string',
-            'lat'    => 'required|numeric',
-            'lng'    => 'required|numeric',
-        ]);
+ public function search(Request $request)
+{
+    $data = $request->validate([
+        'name'   => 'required|string',
+        'lat'    => 'nullable|numeric',
+        'lng'    => 'nullable|numeric',
+    ]);
 
-        $name = $data['name'];
-        $lat  = (float) $data['lat'];
-        $lng  = (float) $data['lng'];
-        $radius = 50;
+    $name = $data['name'];
+    $lat  = $data['lat'] ?? null;
+    $lng  = $data['lng'] ?? null;
+    $radius = 500;
 
-        // Case-insensitive exact match
-        $medicines = Medicine::whereRaw('LOWER(brand_name) = ?', [strtolower($name)])->get();
+    $medicines = Medicine::whereRaw('LOWER(brand_name) LIKE ?', ['%' . strtolower($name) . '%'])->get();
 
-        if ($medicines->isEmpty()) {
-            return response()->json(['message' => 'medicine not found'], 404);
-        }
+    if ($medicines->isEmpty()) {
+        return response()->json(['message' => 'medicine not found'], 404);
+    }
 
-        $medicineIds = $medicines->pluck('id')->toArray();
+    $medicineIds = $medicines->pluck('id')->toArray();
 
+    $query = DB::table('stock_batches')
+        ->join('pharmacy_profiles', 'pharmacy_profiles.id', '=', 'stock_batches.pharmacy_id')
+        ->join('medicines', 'medicines.id', '=', 'stock_batches.medicine_id')
+        ->join('users', 'users.id', '=', 'pharmacy_profiles.user_id')
+        ->whereIn('stock_batches.medicine_id', $medicineIds)
+        ->where('stock_batches.quantity', '>=', 0)
+        ->select(
+            'pharmacy_profiles.id',
+            'users.name as pharmacy_name',
+            'pharmacy_profiles.location as pharmacy_location',
+            'pharmacy_profiles.latitude',
+            'pharmacy_profiles.longitude',
+            'pharmacy_profiles.contact_info',
+            'stock_batches.medicine_id',
+            'medicines.brand_name as medicine_name',
+            'medicines.price',
+            'medicines.active_ingredient_id',
+            DB::raw('SUM(stock_batches.quantity) as quantity')
+        )
+        ->groupBy(
+            'pharmacy_profiles.id',
+            'users.name',
+            'pharmacy_profiles.location',
+            'pharmacy_profiles.latitude',
+            'pharmacy_profiles.longitude',
+            'pharmacy_profiles.contact_info',
+            'stock_batches.medicine_id',
+            'medicines.brand_name',
+            'medicines.price',
+            'medicines.active_ingredient_id'
+        );
+
+    if ($lat !== null && $lng !== null) {
+        // Only calculate distance if location is provided
         $haversine = "(6371 * acos(
             cos(radians(?)) 
             * cos(radians(pharmacy_profiles.latitude)) 
@@ -39,72 +72,62 @@ class SearchController extends Controller
             * sin(radians(pharmacy_profiles.latitude))
         ))";
 
-        $results = DB::table('stock_batches')
-            ->join('pharmacy_profiles', 'pharmacy_profiles.id', '=', 'stock_batches.pharmacy_id')
-            ->join('medicines', 'medicines.id', '=', 'stock_batches.medicine_id')
-            ->join('users', 'users.id', '=', 'pharmacy_profiles.user_id') // Join users to get pharmacy name
-            ->whereIn('stock_batches.medicine_id', $medicineIds)
-            ->where('stock_batches.quantity', '>=', 0)
-            ->selectRaw("
-                pharmacy_profiles.id,
-                users.name as pharmacy_name,           
-                pharmacy_profiles.location as pharmacy_location,
-                pharmacy_profiles.latitude,
-                pharmacy_profiles.longitude,
-                pharmacy_profiles.contact_info,
-                stock_batches.medicine_id,
-                medicines.brand_name as medicine_name,
-                medicines.price,
-                medicines.active_ingredient_id,
-                SUM(stock_batches.quantity) as quantity,
-                {$haversine} AS distance
-            ", [$lat, $lng, $lat])
-            ->groupBy(
-                'pharmacy_profiles.id',
-                'users.name',                         // Group by pharmacy name
-                'pharmacy_profiles.location',
-                'pharmacy_profiles.latitude',
-                'pharmacy_profiles.longitude',
-                'pharmacy_profiles.contact_info',
-                'stock_batches.medicine_id',
-                'medicines.brand_name',
-                'medicines.price',
-                'medicines.active_ingredient_id'
-            )
-            ->having('distance', '<=', $radius)
-            ->orderBy('distance', 'asc')
-            ->limit(10)
-            ->get();
-
-        if ($results->isEmpty()) {
-            return response()->json(['message' => 'No pharmacies has that medicine within your area.'], 404);
-        }
-
-        $payload = $results->map(function ($row) {
-            return [
-                'pharmacy_id'   => $row->id,
-                'pharmacy_name' => $row->pharmacy_name, 
-                'pharmacy_location' => $row->pharmacy_location,
-                'latitude'      => (float) $row->latitude,
-                'longitude'     => (float) $row->longitude,
-                'contact_info'  => $row->contact_info,
-                'medicine_id'   => $row->medicine_id,
-                'medicine_name' => $row->medicine_name,
-                'price'         => $row->price,
-                'active_ingredient_id' => $row->active_ingredient_id,
-                'quantity'      => (int) $row->quantity,
-                'distance_km'   => round((float) $row->distance, 2),
-            ];
-        });
-
-        return response()->json([
-            'query' => [
-                'name' => $name,
-                'lat' => $lat,
-                'lng' => $lng,
-                'radius_km' => $radius,
-            ],
-            'matches' => $payload
-        ]);
+        $query->selectRaw("{$haversine} AS distance", [$lat, $lng, $lat])
+              ->having('distance', '<=', $radius)
+              ->orderBy('distance', 'asc');
+    } else {
+        $query->selectRaw("NULL as distance");
     }
+
+    $perPage = $request->input('per_page', 5);
+
+    $results = $query->paginate($perPage);
+
+    if ($results->isEmpty()) {
+        return response()->json(['message' => 'No pharmacies has that medicine.'], 404);
+    }
+
+    // Group results by pharmacy_id
+    $grouped = [];
+    foreach ($results as $row) {
+        $pharmacyId = $row->id;
+        if (!isset($grouped[$pharmacyId])) {
+            $grouped[$pharmacyId] = [
+                'pharmacy_id'      => $pharmacyId,
+                'pharmacy_name'    => $row->pharmacy_name,
+                'pharmacy_location'=> $row->pharmacy_location,
+                'latitude'         => (float) $row->latitude,
+                'longitude'        => (float) $row->longitude,
+                'contact_info'     => $row->contact_info,
+                'distance_km'      => $row->distance !== null ? round((float) $row->distance, 2) : null,
+                'medicines'        => [],
+            ];
+        }
+        $grouped[$pharmacyId]['medicines'][] = [
+            'medicine_id'           => $row->medicine_id,
+            'medicine_name'         => $row->medicine_name,
+            'price'                 => $row->price,
+            'active_ingredient_id'  => $row->active_ingredient_id,
+            'quantity'              => (int) $row->quantity,
+        ];
+    }
+
+    return response()->json([
+        'query' => [
+            'name' => $name,
+            'lat' => $lat,
+            'lng' => $lng,
+            'radius_km' => $lat && $lng ? $radius : null,
+        ],
+        'matches' => array_values($grouped),
+        'pagination' => [
+            'current_page' => $results->currentPage(),
+            'last_page'    => $results->lastPage(),
+            'per_page'     => $results->perPage(),
+            'total'        => $results->total(),
+        ]
+    ]);
+}
+
+
 }
