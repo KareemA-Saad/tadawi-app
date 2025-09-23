@@ -48,6 +48,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/cart', [CartController::class, 'index']);
             Route::post('/cart', [CartController::class, 'store'])->name('cart.add');
             Route::delete('/cart/clear', [CartController::class, 'clear'])->name('cart.clear');
+            Route::delete('/cart/{item}', [CartController::class, 'destroy'])->name('cart.remove');
             Route::get('/cart/recommendations', [CartController::class, 'recommendations'])->name('cart.recommendations');
 
         });
