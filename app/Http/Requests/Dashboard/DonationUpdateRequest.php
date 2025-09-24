@@ -22,7 +22,8 @@ class DonationUpdateRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'verified' => 'required|boolean',
+            'verified' => 'nullable|boolean',
+            'status' => 'nullable|in:proposed,under_review,approved,rejected,collected',
             'location' => 'nullable|string',
             'contact_info' => 'nullable|string',
             'medicine_id' => 'nullable|exists:medicines,id',
@@ -42,6 +43,7 @@ class DonationUpdateRequest extends FormRequest
         return [
             'verified.required' => 'The verification status is required.',
             'verified.boolean' => 'The verification status must be a boolean (true/false).',
+            'status.in' => 'The selected status is invalid. Valid values are: proposed, under_review, approved, rejected, collected.',
             'location.string' => 'The location must be a string.',
             'contact_info.string' => 'The contact info must be a string.',
             'medicine_id.exists' => 'The selected medicine does not exist.',

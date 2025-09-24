@@ -163,7 +163,7 @@ class AuthRequest extends FormRequest
             // Email validation messages
             'email.required' => 'Email is required.',
             'email.email' => 'Please provide a valid email address.',
-            'email.unique' => 'This email is already registered.',
+            'email.unique' => 'We couldn’t complete your registration with this email.',
             'email.max' => 'Email cannot exceed 255 characters.',
 
             // Password validation messages
