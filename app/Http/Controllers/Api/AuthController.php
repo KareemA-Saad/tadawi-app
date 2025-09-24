@@ -58,7 +58,7 @@ class AuthController extends Controller
     /**
      * Redirect to Google OAuth.
      */
-    public function googleRedirect()
+   public function googleRedirect()
     {
         return Socialite::driver('google')->redirect();
     }
@@ -66,22 +66,18 @@ class AuthController extends Controller
     /**
      * Handle Google OAuth callback.
      */
-    public function googleCallback()
-    {
-        try {
-            $result = $this->authService->handleGoogleCallback();
+  public function googleCallback()
+{
+    try {
+        $result = $this->authService->handleGoogleCallback();
 
-            // In a SPA, you might want to redirect to frontend with token
-            // return redirect()->to(config('app.frontend_url') . '/auth/callback?token=' . $result['token']);
-
-            return response()->json($result, 200);
-        } catch (ValidationException $e) {
-            return response()->json([
-                'message' => 'Google authentication failed',
-                'errors' => $e->errors()
-            ], 401);
-        }
+        // رجّع redirect للـ React مع التوكين
+        return redirect()->to(config('app.frontend_url') . '/auth/callback?token=' . $result['token']);
+    } catch (ValidationException $e) {
+        $errorMessage = urlencode($e->errors()['google'][0]); // تشفير الرسالة للـ URL
+        return redirect()->to(config('app.frontend_url') . '/auth/callback?error=GoogleAuthFailed&message=' . $errorMessage);
     }
+}
 
     /**
      * Verify OTP code.

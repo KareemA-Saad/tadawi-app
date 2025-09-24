@@ -30,6 +30,7 @@ class User extends Authenticatable
         'travel_mode',
         'google_id',
         'email_verified_at',
+        'provider',
     ];
 
     /**

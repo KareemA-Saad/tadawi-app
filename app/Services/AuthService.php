@@ -60,22 +60,82 @@ class AuthService
      * Login user with email and password.
      */
     public function loginWithEmail(array $credentials): array
-    {
-        $user = User::where('email', $credentials['email'])->first();
+{
+    $user = User::where('email', $credentials['email'])->first();
 
-        if (!$user || !Hash::check($credentials['password'], $user->password)) {
-            throw ValidationException::withMessages([
-                'email' => ['The provided credentials are incorrect.']
+    if (!$user) {
+        throw ValidationException::withMessages([
+            'email' => ['The provided credentials are incorrect.']
+        ]);
+    }
+
+    if (is_null($user->password) || $user->provider === 'google') {
+        throw ValidationException::withMessages([
+            'email' => ['Please use Google Sign-in for this account.']
+        ]);
+    }
+
+    if (!Hash::check($credentials['password'], $user->password)) {
+        throw ValidationException::withMessages([
+            'email' => ['The provided credentials are incorrect.']
+        ]);
+    }
+
+    if (!$user->isVerified()) {
+        $this->sendOtpEmail($user->email);
+        return [
+            'user' => $user,
+            'requires_verification' => true,
+            'message' => 'Please verify your email. OTP sent.'
+        ];
+    }
+
+    $token = $user->createToken('auth-token')->plainTextToken;
+
+    return [
+        'user' => $user,
+        'token' => $token,
+        'requires_verification' => false,
+        'message' => 'Login successful.'
+    ];
+}
+
+    /**
+     * Handle Google OAuth callback.
+     */
+public function handleGoogleCallback(): array
+{
+    try {
+        /** @var \Laravel\Socialite\Two\GoogleProvider $googleProvider */
+        $googleProvider = Socialite::driver('google');
+        $googleUser = $googleProvider->stateless()->user();
+        
+        $user = User::where('email', $googleUser->getEmail())->first();
+
+        if ($user) {
+            // User exists, update Google ID if not set
+            if (!$user->google_id) {
+                $user->update(['google_id' => $googleUser->getId()]);
+            }
+            
+            // Mark as verified if not already
+            if (!$user->isVerified()) {
+                $user->update(['email_verified_at' => Carbon::now()]);
+            }
+        } else {
+            // Create new user
+            $user = User::create([
+                'name' => $googleUser->getName(),
+                'email' => $googleUser->getEmail(),
+                'google_id' => $googleUser->getId(),
+                'provider' => 'google', // تمييز المستخدم
+                'role' => 'patient', // Default role
+                'status' => 'active',
+                'email_verified_at' => Carbon::now(),
+                'profile_picture_path' => $googleUser->getAvatar(),
+               
+
             ]);
-        }
-
-        if (!$user->isVerified()) {
-            $this->sendOtpEmail($user->email);
-            return [
-                'user' => $user,
-                'requires_verification' => true,
-                'message' => 'Please verify your email. OTP sent.'
-            ];
         }
 
         $token = $user->createToken('auth-token')->plainTextToken;
@@ -84,61 +144,20 @@ class AuthService
             'user' => $user,
             'token' => $token,
             'requires_verification' => false,
-            'message' => 'Login successful.'
+            'message' => 'Google authentication successful.'
         ];
+    } catch (\Exception $e) {
+        // سجل الخطأ في الـ logs
+        \Log::error('Google OAuth failed: ' . $e->getMessage(), [
+            'exception' => $e,
+            'stack_trace' => $e->getTraceAsString()
+        ]);
+
+        throw ValidationException::withMessages([
+            'google' => ['Google authentication failed: ' . $e->getMessage()]
+        ]);
     }
-
-    /**
-     * Handle Google OAuth callback.
-     */
-    public function handleGoogleCallback(): array
-    {
-        try {
-            /** @var \Laravel\Socialite\Two\GoogleProvider $googleProvider */
-            $googleProvider = Socialite::driver('google');
-            $googleUser = $googleProvider->stateless()->user();
-            
-            $user = User::where('email', $googleUser->getEmail())->first();
-
-            if ($user) {
-                // User exists, update Google ID if not set
-                if (!$user->google_id) {
-                    $user->update(['google_id' => $googleUser->getId()]);
-                }
-                
-                // Mark as verified if not already
-                if (!$user->isVerified()) {
-                    $user->update(['email_verified_at' => Carbon::now()]);
-                }
-            } else {
-                // Create new user
-                $user = User::create([
-                    'name' => $googleUser->getName(),
-                    'email' => $googleUser->getEmail(),
-                    'google_id' => $googleUser->getId(),
-                    'role' => 'patient', // Default role
-                    'status' => 'active',
-                    'email_verified_at' => Carbon::now(),
-                    'profile_picture_path' => $googleUser->getAvatar(),
-                ]);
-            }
-
-            $token = $user->createToken('auth-token')->plainTextToken;
-
-            return [
-                'user' => $user,
-                'token' => $token,
-                'requires_verification' => false,
-                'message' => 'Google authentication successful.'
-            ];
-
-        } catch (\Exception $e) {
-            throw ValidationException::withMessages([
-                'google' => ['Google authentication failed. Please try again.']
-            ]);
-        }
-    }
-
+}
     /**
      * Verify OTP and activate user account.
      */

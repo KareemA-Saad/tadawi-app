@@ -29,9 +29,10 @@ Route::prefix('v1')->group(function () {
         Route::post('send-password-reset-otp', [AuthController::class, 'sendPasswordResetOtp']);
         Route::post('reset-password', [AuthController::class, 'resetPassword']);
 
-        // Google OAuth
-        Route::get('google/redirect', [AuthController::class, 'googleRedirect']);
-        Route::get('google/callback', [AuthController::class, 'googleCallback']);
+      Route::middleware('web')->group(function () {
+    Route::get('google/redirect', [AuthController::class, 'googleRedirect'])->name('google.redirect');
+    Route::get('google/callback', [AuthController::class, 'googleCallback'])->name('google.callback');
+    });
 
         // Protected routes
         Route::middleware('auth:sanctum')->group(function () {
@@ -48,6 +49,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/cart', [CartController::class, 'index']);
             Route::post('/cart', [CartController::class, 'store'])->name('cart.add');
             Route::delete('/cart/clear', [CartController::class, 'clear'])->name('cart.clear');
+            Route::delete('/cart/{item}', [CartController::class, 'destroy'])->name('cart.remove');
             Route::get('/cart/recommendations', [CartController::class, 'recommendations'])->name('cart.recommendations');
 
         });
