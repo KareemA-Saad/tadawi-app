@@ -32,7 +32,7 @@ class MedicineCorrectionService
                 ->withHeaders([
                     'Content-Type' => 'application/json',
                 ])
-                ->post($this->apiUrl, [
+                ->post($this->apiUrl . '?key=' . $this->apiKey, [
                     'contents' => [
                         [
                             'parts' => [
@@ -103,10 +103,7 @@ class MedicineCorrectionService
      */
     private function buildPrompt(string $medicineName): string
     {
-        return "const apiKey = \"AIzaSyAhnnxUumzQLaWce4OxIO4U9iIuzeTrCwk\";
-const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=\${apiKey}`;
-
-SYSTEM / CONTEXT:
+        return "SYSTEM / CONTEXT:
 You are a clinical-grade medicine name correction assistant. You have broad knowledge of commercial (brand) and generic drug names across global markets. You must NOT invent new drug names. Only suggest names you are confident exist in real life. If unsure, return \"unknown\".
 
 TASK:

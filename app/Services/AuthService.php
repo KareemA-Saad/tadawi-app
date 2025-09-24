@@ -42,7 +42,7 @@ class AuthService
             'email' => $data['email'],
             'password' => Hash::make($data['password']),
             'phone_number' => $data['phone_number'] ?? null,
-            'role' => 'patient', // Default role, will be updated later
+            'role' => null, // No default role, user will choose later
             'status' => 'pending',
         ]);
 
