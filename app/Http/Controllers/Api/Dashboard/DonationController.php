@@ -10,6 +10,7 @@ use App\Models\Medicine;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 
 class DonationController extends Controller
 {
@@ -26,6 +27,8 @@ class DonationController extends Controller
                 'donations.location',
                 'donations.contact_info',
                 'donations.verified',
+                'donations.status',
+                'donations.sealed_confirmed',
                 'donations.created_at',
                 'donations.updated_at',
                 'users.name as donor_name'
@@ -54,14 +57,20 @@ class DonationController extends Controller
             $transformedData = collect($paginatedData['data'])->map(function ($donation) {
                 // Create a mock Donation object for the resource
                 $mockDonation = new Donation([
-                    'id' => $donation->id,
                     'user_id' => $donation->user_id,
                     'location' => $donation->location,
                     'contact_info' => $donation->contact_info,
                     'verified' => $donation->verified,
+                    'status' => $donation->status,
+                    'sealed_confirmed' => $donation->sealed_confirmed,
                     'created_at' => $donation->created_at,
                     'updated_at' => $donation->updated_at,
                 ]);
+
+                // Set the ID and timestamps manually since they're not fillable
+                $mockDonation->id = $donation->id;
+                $mockDonation->created_at = $donation->created_at;
+                $mockDonation->updated_at = $donation->updated_at;
 
                 // Add donor name to the mock object
                 $mockDonation->donor_name = $donation->donor_name;
@@ -133,16 +142,50 @@ class DonationController extends Controller
     public function update(DonationUpdateRequest $request, Donation $donation)
     {
         try {
-            $validatedData = $request->validated();
+            // Validate the request manually to ensure it works properly
+            $validator = Validator::make($request->all(), [
+                'verified' => 'nullable|boolean',
+                'status' => 'nullable|in:proposed,under_review,approved,rejected,collected',
+                'location' => 'nullable|string',
+                'contact_info' => 'nullable|string',
+                'medicine_id' => 'nullable|exists:medicines,id',
+                'quantity' => 'required_with:medicine_id|integer|min:1',
+                'expiry_date' => 'nullable|date|after:today',
+                'batch_num' => 'nullable|string|max:100',
+            ], [
+                'status.in' => 'The selected status is invalid. Valid values are: proposed, under_review, approved, rejected, collected.',
+            ]);
+
+            if ($validator->fails()) {
+                return $this->error('Validation failed', 422, $validator->errors());
+            }
+
+            $validatedData = $validator->validated();
 
             // Use database transaction to ensure data consistency
             $updatedDonation = DB::transaction(function () use ($donation, $validatedData) {
                 // Update donation basic info
-                $donation->update([
-                    'verified' => $validatedData['verified'],
-                    'location' => $validatedData['location'] ?? $donation->location,
-                    'contact_info' => $validatedData['contact_info'] ?? $donation->contact_info,
-                ]);
+                $updateData = [];
+
+                if (isset($validatedData['verified'])) {
+                    $updateData['verified'] = $validatedData['verified'];
+                }
+
+                if (isset($validatedData['status'])) {
+                    $updateData['status'] = $validatedData['status'];
+                }
+
+                if (isset($validatedData['location'])) {
+                    $updateData['location'] = $validatedData['location'];
+                }
+
+                if (isset($validatedData['contact_info'])) {
+                    $updateData['contact_info'] = $validatedData['contact_info'];
+                }
+
+                if (!empty($updateData)) {
+                    $donation->update($updateData);
+                }
 
                 // Handle medicine addition if provided
                 if (isset($validatedData['medicine_id']) && $validatedData['medicine_id']) {
