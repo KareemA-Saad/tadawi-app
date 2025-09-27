@@ -35,22 +35,22 @@ Route::prefix('v1')->group(function () {
 
         // Protected routes
         Route::middleware('auth:sanctum')->group(function () {
-            // Authenticated (no verification required)
+            // Authenticated (no verification required) - only basic user info
             Route::get('me', [AuthController::class, 'me']);
             Route::post('logout', [AuthController::class, 'logout']);
 
-            // Authenticated + email verified
+            // All other routes require email verification
             Route::middleware('verified')->group(function () {
+                // Role management
                 Route::post('update-role', [AuthController::class, 'updateRole']);
+
+                // Cart routes
+                Route::get('/cart', [CartController::class, 'index']);
+                Route::post('/cart', [CartController::class, 'store'])->name('cart.add');
+                Route::delete('/cart/clear', [CartController::class, 'clear'])->name('cart.clear');
+                Route::delete('/cart/{item}', [CartController::class, 'destroy'])->name('cart.remove');
+                Route::get('/cart/recommendations', [CartController::class, 'recommendations'])->name('cart.recommendations');
             });
-
-            // Cart routes
-            Route::get('/cart', [CartController::class, 'index']);
-            Route::post('/cart', [CartController::class, 'store'])->name('cart.add');
-            Route::delete('/cart/clear', [CartController::class, 'clear'])->name('cart.clear');
-            Route::delete('/cart/{item}', [CartController::class, 'destroy'])->name('cart.remove');
-            Route::get('/cart/recommendations', [CartController::class, 'recommendations'])->name('cart.recommendations');
-
         });
 
         // Drug interaction routes
@@ -60,7 +60,7 @@ Route::prefix('v1')->group(function () {
     Route::get('pharmacies', [PharmacyController::class, 'index']);
     Route::get('search', [SearchController::class, 'search']);
     // search routes
-    Route::middleware(['auth:sanctum'])->group(function () {
+    Route::middleware(['auth:sanctum', 'verified'])->group(function () {
         // Search routes
 
         Route::post('search/with-alternatives', [AlternativeSearchController::class, 'search']);
@@ -79,7 +79,7 @@ Route::prefix('v1')->group(function () {
         Route::get('orders/{id}', [OrderController::class, 'show'])->name('orders.show');
 
         // Pharmacy routes
-        
+
         Route::get('pharmacies/nearby', [PharmacyController::class, 'nearby']);
         Route::get('pharmacies/my', [PharmacyController::class, 'myPharmacy']);
         Route::get('pharmacies/{id}', [PharmacyController::class, 'show']);
@@ -110,7 +110,7 @@ Route::prefix('v1')->group(function () {
         Route::post('medicine-correction/validate', [MedicineCorrectionController::class, 'validateForSave']);
 
     // Donation routes - require authentication
-    Route::middleware(['auth:sanctum'])->group(function () {
+    Route::middleware(['auth:sanctum', 'verified'])->group(function () {
         // Medicines search (authenticated, minimal data)
         Route::get('medicines/search', [MedicineController::class, 'search']);
 

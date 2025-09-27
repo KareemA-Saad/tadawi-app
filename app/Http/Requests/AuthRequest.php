@@ -82,6 +82,11 @@ class AuthRequest extends FormRequest
                     'string',
                     'size:6',
                     'regex:/^[0-9]{6}$/'
+                ],
+                'email' => [
+                    'required',
+                    'string',
+                    'email:rfc,dns'
                 ]
             ];
         }

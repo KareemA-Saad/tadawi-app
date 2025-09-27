@@ -20,7 +20,7 @@ class AuthService
     {
         // Check if user already exists
         $existingUser = User::where('email', $data['email'])->first();
-        
+
         if ($existingUser) {
             if ($existingUser->isVerified()) {
                 throw ValidationException::withMessages([
@@ -72,7 +72,7 @@ class AuthService
         if (!$user->isVerified()) {
             $this->sendOtpEmail($user->email);
             return [
-                'user' => $user,
+                'user' => $user->only(['id', 'name', 'email', 'email_verified_at']),
                 'requires_verification' => true,
                 'message' => 'Please verify your email. OTP sent.'
             ];
@@ -97,7 +97,7 @@ class AuthService
             /** @var \Laravel\Socialite\Two\GoogleProvider $googleProvider */
             $googleProvider = Socialite::driver('google');
             $googleUser = $googleProvider->stateless()->user();
-            
+
             $user = User::where('email', $googleUser->getEmail())->first();
 
             if ($user) {
@@ -105,7 +105,7 @@ class AuthService
                 if (!$user->google_id) {
                     $user->update(['google_id' => $googleUser->getId()]);
                 }
-                
+
                 // Mark as verified if not already
                 if (!$user->isVerified()) {
                     $user->update(['email_verified_at' => Carbon::now()]);
@@ -145,14 +145,24 @@ class AuthService
     /**
      * Verify OTP and activate user account.
      */
-    public function verifyOtp(string $otpCode): array
+    public function verifyOtp(string $otpCode, string $email = null): array
     {
-        // Find the most recent valid OTP for verification
-        $otp = Otp::where('type', 'verification')
-                  ->where('used', false)
-                  ->where('expires_at', '>', Carbon::now())
-                  ->orderBy('created_at', 'desc')
-                  ->first();
+        // If email is provided, find OTP for that specific email
+        if ($email) {
+            $otp = Otp::where('email', $email)
+                      ->where('type', 'verification')
+                      ->where('used', false)
+                      ->where('expires_at', '>', Carbon::now())
+                      ->orderBy('created_at', 'desc')
+                      ->first();
+        } else {
+            // Find the most recent valid OTP for verification (fallback for backward compatibility)
+            $otp = Otp::where('type', 'verification')
+                      ->where('used', false)
+                      ->where('expires_at', '>', Carbon::now())
+                      ->orderBy('created_at', 'desc')
+                      ->first();
+        }
 
         if (!$otp || !$otp->verifyOtp($otpCode)) {
             throw ValidationException::withMessages([
@@ -187,7 +197,7 @@ class AuthService
     public function resendOtp(string $email): array
     {
         $user = User::where('email', $email)->first();
-        
+
         if (!$user) {
             throw ValidationException::withMessages([
                 'email' => ['User not found.']
@@ -211,7 +221,7 @@ class AuthService
     public function updateUserRole(int $userId, string $role, array $profileData = []): User
     {
         $user = User::findOrFail($userId);
-        
+
         $user->update(['role' => $role]);
 
         // Create appropriate profile based on role (only if doesn't exist)
@@ -236,7 +246,7 @@ class AuthService
     public function sendPasswordResetOtp(string $email): array
     {
         $user = User::where('email', $email)->first();
-        
+
         if (!$user) {
             throw ValidationException::withMessages([
                 'email' => ['User not found with this email address.']
@@ -303,7 +313,7 @@ class AuthService
         try {
             $otpRecord = Otp::generateOtp($email, 'verification');
             $otpCode = $otpRecord->getPlainOtp();
-            
+
             // Send email with OTP
             Mail::send('emails.otp', ['otp' => $otpCode], function ($message) use ($email) {
                 $message->to($email);
@@ -330,7 +340,7 @@ class AuthService
         try {
             $otpRecord = Otp::generateOtp($email, 'password_reset');
             $otpCode = $otpRecord->getPlainOtp();
-            
+
             // Send email with OTP
             Mail::send('emails.password-reset-otp', ['otp' => $otpCode], function ($message) use ($email) {
                 $message->to($email);

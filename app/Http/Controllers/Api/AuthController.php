@@ -89,7 +89,7 @@ class AuthController extends Controller
     public function verifyOtp(AuthRequest $request)
     {
         try {
-            $result = $this->authService->verifyOtp($request->otp);
+            $result = $this->authService->verifyOtp($request->otp, $request->email);
             return response()->json($result, 200);
         } catch (ValidationException $e) {
             return response()->json([
@@ -145,8 +145,22 @@ class AuthController extends Controller
      */
     public function me(Request $request)
     {
+        $user = $request->user();
+
+        // If user is not verified, return limited information
+        if (!$user->isVerified()) {
+            return response()->json([
+                'user' => $user->only(['id', 'name', 'email', 'email_verified_at']),
+                'is_verified' => false,
+                'needs_verification' => true,
+                'message' => 'Please verify your email to access full features.'
+            ], 200);
+        }
+
         return response()->json([
-            'user' => $request->user()->load(['patientProfile', 'doctorProfile', 'pharmacyProfile'])
+            'user' => $user->load(['patientProfile', 'doctorProfile', 'pharmacyProfile']),
+            'is_verified' => true,
+            'needs_profile_completion' => $user->needsProfileCompletion()
         ]);
     }
 

@@ -21,6 +21,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->alias([
             'verified' => \App\Http\Middleware\EnsureEmailIsVerified::class,
+            'verified.api' => \App\Http\Middleware\EnsureEmailVerifiedForApi::class,
             'EnsureAdmin' => \App\Http\Middleware\EnsureAdmin::class,
         ]);
 
