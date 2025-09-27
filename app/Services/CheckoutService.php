@@ -17,7 +17,7 @@ use Carbon\Carbon;
 class CheckoutService
 {
     use ImageHandling;
-    
+
     protected CartService $cartService;
     protected PaymentService $paymentService;
 
@@ -28,89 +28,101 @@ class CheckoutService
     }
 
     /**
-     * Validate cart for checkout
+     * Validate cart for checkout with comprehensive validation
      */
     public function validateCartForCheckout(int $cartId, int $userId): array
     {
-        try {
-            $cart = Order::where('id', $cartId)
-                ->where('user_id', $userId)
-                ->where('status', 'cart')
-                ->with(['medicines.medicine', 'pharmacy'])
-                ->first();
+        return DB::transaction(function () use ($cartId, $userId) {
+            try {
+                $cart = Order::where('id', $cartId)
+                    ->where('user_id', $userId)
+                    ->where('status', 'cart')
+                    ->with(['medicines.medicine', 'pharmacy'])
+                    ->lockForUpdate()
+                    ->first();
 
-            if (!$cart) {
+                if (!$cart) {
+                    return [
+                        'valid' => false,
+                        'message' => 'Cart not found or not accessible',
+                        'errors' => ['cart_not_found']
+                    ];
+                }
+
+                // Check if cart is expired
+                if ($this->cartService->isCartExpired($cart)) {
+                    return [
+                        'valid' => false,
+                        'message' => 'Cart has expired. Please add items again.',
+                        'errors' => ['cart_expired']
+                    ];
+                }
+
+                // Check if cart is empty
+                if ($cart->medicines->isEmpty()) {
+                    return [
+                        'valid' => false,
+                        'message' => 'Cart is empty',
+                        'errors' => ['cart_empty']
+                    ];
+                }
+
+                // Validate pharmacy availability
+                $pharmacyValidation = $this->validatePharmacyAvailability($cart->pharmacy);
+                if (!$pharmacyValidation['valid']) {
+                    return $pharmacyValidation;
+                }
+
+                // Validate stock availability and price consistency
+                $stockValidation = $this->validateStockAvailability($cart);
+                if (!$stockValidation['valid']) {
+                    return $stockValidation;
+                }
+
+                // Validate user profile
+                $userValidation = $this->validateUserProfile($cart->user);
+                if (!$userValidation['valid']) {
+                    return $userValidation;
+                }
+
+                // Validate quantity limits
+                $quantityValidation = $this->validateQuantityLimits($cart);
+                if (!$quantityValidation['valid']) {
+                    return $quantityValidation;
+                }
+
+                // Compute totals for parity with checkout summary without mutating DB state
+                $totals = $this->calculateOrderTotals($cart);
+
+                return [
+                    'valid' => true,
+                    'message' => 'Cart is ready for checkout',
+                    'cart' => $cart,
+                    'totals' => $totals,
+                ];
+
+            } catch (\Exception $e) {
+                Log::error('Checkout validation error: ' . $e->getMessage());
                 return [
                     'valid' => false,
-                    'message' => 'Cart not found or not accessible',
-                    'errors' => ['cart_not_found']
+                    'message' => 'Validation failed due to system error',
+                    'errors' => ['system_error']
                 ];
             }
-
-            // Check if cart is expired
-            if ($this->cartService->isCartExpired($cart)) {
-                return [
-                    'valid' => false,
-                    'message' => 'Cart has expired. Please add items again.',
-                    'errors' => ['cart_expired']
-                ];
-            }
-
-            // Check if cart is empty
-            if ($cart->medicines->isEmpty()) {
-                return [
-                    'valid' => false,
-                    'message' => 'Cart is empty',
-                    'errors' => ['cart_empty']
-                ];
-            }
-
-            // Validate pharmacy availability
-            $pharmacyValidation = $this->validatePharmacyAvailability($cart->pharmacy);
-            if (!$pharmacyValidation['valid']) {
-                return $pharmacyValidation;
-            }
-
-            // Validate stock availability
-            $stockValidation = $this->validateStockAvailability($cart);
-            if (!$stockValidation['valid']) {
-                return $stockValidation;
-            }
-
-            // Validate user profile
-            $userValidation = $this->validateUserProfile($cart->user);
-            if (!$userValidation['valid']) {
-                return $userValidation;
-            }
-
-            // Compute totals for parity with checkout summary without mutating DB state
-            $totals = $this->calculateOrderTotals($cart);
-
-            return [
-                'valid' => true,
-                'message' => 'Cart is ready for checkout',
-                'cart' => $cart,
-                'totals' => $totals,
-            ];
-
-        } catch (\Exception $e) {
-            Log::error('Checkout validation error: ' . $e->getMessage());
-            return [
-                'valid' => false,
-                'message' => 'Validation failed due to system error',
-                'errors' => ['system_error']
-            ];
-        }
+        });
     }
 
     /**
-     * Process checkout for a cart
+     * Process checkout for a cart with enhanced transaction handling
      */
     public function processCheckout(int $cartId, int $userId, array $checkoutData): array
     {
         return DB::transaction(function () use ($cartId, $userId, $checkoutData) {
+            $cart = null;
+            $order = null;
+
             try {
-                // Validate cart first
+                // Validate cart first with comprehensive validation
                 $validation = $this->validateCartForCheckout($cartId, $userId);
                 if (!$validation['valid']) {
                     return $validation;
@@ -118,8 +130,8 @@ class CheckoutService
 
                 $cart = $validation['cart'];
 
-                // Reserve stock (placeholder - will be implemented in InventoryService)
-                $stockReservation = $this->reserveStock($cart);
+                // Reserve stock with proper locking
+                $stockReservation = $this->reserveStockWithLocking($cart);
                 if (!$stockReservation['success']) {
                     return [
                         'success' => false,
@@ -131,7 +143,7 @@ class CheckoutService
                 // Convert cart to order
                 $order = $this->convertCartToOrder($cart, $checkoutData);
                 if (!$order) {
-                    // Release reserved stock (placeholder)
+                    // Release reserved stock
                     $this->releaseStock($cart);
                     return [
                         'success' => false,
@@ -140,7 +152,7 @@ class CheckoutService
                     ];
                 }
 
-                // Update stock after successful order creation 
+                // Update stock after successful order creation
                 $this->updateStockAfterOrder($order);
 
                 // Process payment for the order
@@ -159,11 +171,11 @@ class CheckoutService
                 $cart->medicines()->delete();
                 $cart->delete();
 
-                Log::info("Checkout initiated for cart {$cartId}, order {$order->id}");
+                Log::info("Checkout completed for cart {$cartId}, order {$order->id}");
 
                 return [
                     'success' => true,
-                    'message' => 'Checkout initiated successfully',
+                    'message' => 'Checkout completed successfully',
                     'order' => $order,
                     'order_id' => $order->id,
                     'payment_result' => $paymentResult
@@ -171,13 +183,19 @@ class CheckoutService
 
             } catch (\Exception $e) {
                 Log::error('Checkout processing error: ' . $e->getMessage());
+
+                // Rollback: release stock if it was reserved
+                if ($cart) {
+                    $this->releaseStock($cart);
+                }
+
                 return [
                     'success' => false,
                     'message' => 'Checkout failed due to system error',
                     'errors' => ['system_error']
                 ];
             }
-        });
+        }, 3); // Retry up to 3 times for deadlocks
     }
 
     /**
@@ -196,10 +214,10 @@ class CheckoutService
 
         // Calculate tax (14%)
         $tax = 14/100 * $subtotal;
-        
+
         // Calculate shipping (30 EGP)
         $shipping = 30;
-        
+
         $total = $subtotal + $tax + $shipping;
 
         return [
@@ -236,33 +254,69 @@ class CheckoutService
     }
 
     /**
-     * Validate stock availability
+     * Validate stock availability with proper locking
      */
     protected function validateStockAvailability(Order $cart): array
     {
         $unavailableItems = [];
+        $priceChangedItems = [];
 
         foreach ($cart->medicines as $item) {
+            // Lock stock for update to prevent race conditions
             $stock = StockBatch::where('pharmacy_id', $cart->pharmacy_id)
                 ->where('medicine_id', $item->medicine_id)
+                ->lockForUpdate()
                 ->first();
 
-            if (!$stock || $stock->quantity < $item->quantity) {
+            if (!$stock) {
                 $unavailableItems[] = [
                     'medicine_id' => $item->medicine_id,
                     'medicine_name' => $item->medicine->brand_name ?? 'Unknown',
                     'requested_quantity' => $item->quantity,
-                    'available_quantity' => $stock ? $stock->quantity : 0
+                    'available_quantity' => 0,
+                    'reason' => 'not_available'
+                ];
+                continue;
+            }
+
+            if ($stock->quantity < $item->quantity) {
+                $unavailableItems[] = [
+                    'medicine_id' => $item->medicine_id,
+                    'medicine_name' => $item->medicine->brand_name ?? 'Unknown',
+                    'requested_quantity' => $item->quantity,
+                    'available_quantity' => $stock->quantity,
+                    'reason' => 'insufficient_stock'
+                ];
+            }
+
+            // Check for price changes
+            $currentPrice = $item->medicine->price;
+            if ($item->price_at_time != $currentPrice) {
+                $priceChangedItems[] = [
+                    'medicine_id' => $item->medicine_id,
+                    'medicine_name' => $item->medicine->brand_name ?? 'Unknown',
+                    'old_price' => $item->price_at_time,
+                    'new_price' => $currentPrice,
+                    'price_change' => $currentPrice - $item->price_at_time
                 ];
             }
         }
 
+        $errors = [];
         if (!empty($unavailableItems)) {
+            $errors[] = 'insufficient_stock';
+        }
+        if (!empty($priceChangedItems)) {
+            $errors[] = 'price_changed';
+        }
+
+        if (!empty($errors)) {
             return [
                 'valid' => false,
-                'message' => 'Some items are no longer available in the requested quantities',
-                'errors' => ['insufficient_stock'],
-                'unavailable_items' => $unavailableItems
+                'message' => 'Some items are no longer available or have price changes',
+                'errors' => $errors,
+                'unavailable_items' => $unavailableItems,
+                'price_changed_items' => $priceChangedItems
             ];
         }
 
@@ -287,6 +341,39 @@ class CheckoutService
     }
 
     /**
+     * Validate quantity limits for all items in cart
+     */
+    protected function validateQuantityLimits(Order $cart): array
+    {
+        $config = $this->cartService->getConfig();
+        $maxPerMedicine = $config['max_quantity_per_medicine'];
+
+        $exceededItems = [];
+
+        foreach ($cart->medicines as $item) {
+            if ($item->quantity > $maxPerMedicine) {
+                $exceededItems[] = [
+                    'medicine_id' => $item->medicine_id,
+                    'medicine_name' => $item->medicine->brand_name ?? 'Unknown',
+                    'quantity' => $item->quantity,
+                    'max_allowed' => $maxPerMedicine
+                ];
+            }
+        }
+
+        if (!empty($exceededItems)) {
+            return [
+                'valid' => false,
+                'message' => 'Some items exceed the maximum quantity limit',
+                'errors' => ['quantity_limit_exceeded'],
+                'exceeded_items' => $exceededItems
+            ];
+        }
+
+        return ['valid' => true];
+    }
+
+    /**
      * Convert cart to order
      */
     protected function convertCartToOrder(Order $cart, array $checkoutData): ?Order
@@ -294,7 +381,7 @@ class CheckoutService
         try {
             // Calculate proper totals with tax and shipping
             $totals = $this->calculateOrderTotals($cart);
-            
+
             $order = Order::create([
                 'user_id' => $cart->user_id,
                 'pharmacy_id' => $cart->pharmacy_id,
@@ -335,7 +422,7 @@ class CheckoutService
     public function getCheckoutSummary(int $cartId, int $userId): array
     {
         $validation = $this->validateCartForCheckout($cartId, $userId);
-        
+
         if (!$validation['valid']) {
             return $validation;
         }
@@ -381,6 +468,61 @@ class CheckoutService
     }
 
     /**
+     * Reserve stock with proper locking to prevent race conditions
+     */
+    protected function reserveStockWithLocking(Order $cart): array
+    {
+        try {
+            $reservedItems = [];
+
+            foreach ($cart->medicines as $item) {
+                // Lock stock for update
+                $stock = StockBatch::where('pharmacy_id', $cart->pharmacy_id)
+                    ->where('medicine_id', $item->medicine_id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$stock) {
+                    // Release previously reserved items
+                    $this->releaseReservedStock($reservedItems);
+                    return [
+                        'success' => false,
+                        'message' => "Medicine {$item->medicine->brand_name} is no longer available"
+                    ];
+                }
+
+                if ($stock->quantity < $item->quantity) {
+                    // Release previously reserved items
+                    $this->releaseReservedStock($reservedItems);
+                    return [
+                        'success' => false,
+                        'message' => "Insufficient stock for {$item->medicine->brand_name}. Available: {$stock->quantity}, Required: {$item->quantity}"
+                    ];
+                }
+
+                // Reserve the stock
+                $stock->quantity -= $item->quantity;
+                $stock->save();
+
+                $reservedItems[] = [
+                    'stock_id' => $stock->id,
+                    'medicine_id' => $item->medicine_id,
+                    'quantity' => $item->quantity
+                ];
+            }
+
+            return ['success' => true, 'message' => 'Stock reserved successfully', 'reserved_items' => $reservedItems];
+
+        } catch (\Exception $e) {
+            // Release any partially reserved stock
+            if (isset($reservedItems)) {
+                $this->releaseReservedStock($reservedItems);
+            }
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
      * Reserve stock (placeholder - will be moved to InventoryService)
      */
     protected function reserveStock(Order $cart): array
@@ -391,6 +533,24 @@ class CheckoutService
             return ['success' => true, 'message' => 'Stock reserved'];
         } catch (\Exception $e) {
             return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Release reserved stock items
+     */
+    protected function releaseReservedStock(array $reservedItems): void
+    {
+        foreach ($reservedItems as $item) {
+            try {
+                $stock = StockBatch::find($item['stock_id']);
+                if ($stock) {
+                    $stock->quantity += $item['quantity'];
+                    $stock->save();
+                }
+            } catch (\Exception $e) {
+                Log::error("Failed to release stock for item {$item['stock_id']}: " . $e->getMessage());
+            }
         }
     }
 
@@ -430,7 +590,7 @@ class CheckoutService
         foreach ($prescriptionFiles as $file) {
             if ($file && $file->isValid()) {
                 $filename = $this->uploadImage($file, 'prescriptions', 'prescription');
-                
+
                 $order->prescriptionUploads()->create([
                     'file_path' => $filename,
                     'ocr_text' => null,

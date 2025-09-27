@@ -6,8 +6,8 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class AddToCartRequest extends FormRequest
 {
-    public function authorize() 
-    { 
+    public function authorize()
+    {
         // Require authenticated user
         return auth()->check();
     }
@@ -17,7 +17,7 @@ class AddToCartRequest extends FormRequest
         return [
             'medicine_id' => 'required|integer|exists:medicines,id',
             'pharmacy_id' => 'required|integer|exists:pharmacy_profiles,id',
-            'quantity' => 'required|integer|min:1|max:2',
+            'quantity' => 'required|integer|min:1',
         ];
     }
 
@@ -25,7 +25,6 @@ class AddToCartRequest extends FormRequest
     {
         return [
             'quantity.min' => 'Quantity must be greater than 0',
-            'quantity.max' => 'Cannot add more than 2 of the same medicine',
             'medicine_id.integer' => 'Medicine ID must be a valid number',
             'pharmacy_id.integer' => 'Pharmacy ID must be a valid number',
         ];

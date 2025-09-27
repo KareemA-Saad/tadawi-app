@@ -25,7 +25,7 @@ class CartController extends Controller
     public function index(Request $request)
     {
         $user = Auth::user();
-        
+
         // Authorization check: User must be authenticated
         if (!$user) {
             return response()->json([
@@ -33,13 +33,13 @@ class CartController extends Controller
                 'message' => 'Authentication required'
             ], 401);
         }
-        
+
         $pharmacyId = $request->query('pharmacy_id');
 
         $query = Order::where('user_id', $user->id)->where('status', 'cart');
         if ($pharmacyId) $query->where('pharmacy_id', $pharmacyId);
 
-        
+
         $carts = $query->with([
             'medicines.medicine',
             'pharmacy.user'
@@ -58,9 +58,9 @@ class CartController extends Controller
             $carts = $carts->diff($expiredCarts);
         }
 
-        
+
         $pharmacyIds = $carts->pluck('pharmacy_id')->unique();
-        
+
         // Safely extract medicine IDs from carts
         $medicineIds = collect();
         foreach ($carts as $cart) {
@@ -69,7 +69,7 @@ class CartController extends Controller
             }
         }
         $medicineIds = $medicineIds->unique()->filter();
-        
+
         if ($medicineIds->isNotEmpty() && $pharmacyIds->isNotEmpty()) {
             $stockData = StockBatch::whereIn('pharmacy_id', $pharmacyIds)
                 ->whereIn('medicine_id', $medicineIds)
@@ -113,16 +113,18 @@ class CartController extends Controller
                 }
 
                 // Calculate and save totals to database
+                $subtotal = $cart->medicines->sum('subtotal') ?? 0.0;
+                $totalAmount = round((float) $subtotal, 2);
+                $totalItems = (int) ($cart->medicines->sum('quantity') ?? 0);
 
-                $cart->total_amount = number_format((float) ($cart->medicines->sum('subtotal') ?? 0.0), 2, '.', '');
+                $cart->total_amount = $totalAmount;
+                $cart->total_items = $totalItems;
 
-                $cart->total_items = $cart->medicines->sum('quantity') ?? 0;
-                
                 // Save the updated totals to the database
                 $cart->save();
             } catch (\Exception $e) {
                 // Handle cart-level errors
-                $cart->total_amount = 0;
+                $cart->total_amount = 0.00;
                 $cart->total_items = 0;
                 $cart->save();
             }
@@ -134,7 +136,7 @@ class CartController extends Controller
     public function store(AddToCartRequest $request)
     {
         $user = Auth::user();
-        
+
         // Authorization check: User must be authenticated
         if (!$user) {
             return response()->json([
@@ -142,126 +144,92 @@ class CartController extends Controller
                 'message' => 'Authentication required'
             ], 401);
         }
-        
+
         $validated = $request->validated();
 
         return DB::transaction(function () use ($user, $validated) {
-            // Lock the stock batch row for update to prevent race conditions
-            $stock = StockBatch::where('pharmacy_id', $validated['pharmacy_id'])
-                ->where('medicine_id', $validated['medicine_id'])
-                ->lockForUpdate()
-                ->first();
+            try {
+                // Basic medicine existence check only
+                $medicine = Medicine::find($validated['medicine_id']);
+                if (!$medicine) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Medicine not found',
+                    ], 404);
+                }
 
-            if (!$stock) {
+                // Create or get cart with lock to prevent concurrent modifications
+                $cart = Order::where('user_id', $user->id)
+                    ->where('pharmacy_id', $validated['pharmacy_id'])
+                    ->where('status', 'cart')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$cart) {
+                    $cart = Order::create([
+                        'user_id' => $user->id,
+                        'pharmacy_id' => $validated['pharmacy_id'],
+                        'status' => 'cart',
+                        'total_amount' => 0.00,
+                        'total_items' => 0
+                    ]);
+                }
+
+                // Check existing item in cart
+                $existing = $cart->medicines()->where('medicine_id', $validated['medicine_id'])->first();
+                $newQuantity = $existing ? $existing->quantity + $validated['quantity'] : $validated['quantity'];
+
+                // Only validate quantity limit (no stock or price validation here)
+                $quantityValidation = $this->cartService->validateQuantityLimit($validated['quantity'], $existing);
+                if (!$quantityValidation['valid']) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => $quantityValidation['message'],
+                        'current_quantity' => $quantityValidation['current_quantity'],
+                        'requested_quantity' => $quantityValidation['requested_quantity'],
+                        'max_per_medicine' => $quantityValidation['max_per_medicine'],
+                    ], 400);
+                }
+
+                $currentPrice = $medicine->price;
+
+                // Update or create cart item
+                if ($existing) {
+                    $existing->update(['quantity' => $newQuantity]);
+                } else {
+                    $cart->medicines()->create([
+                        'medicine_id' => $validated['medicine_id'],
+                        'quantity' => $validated['quantity'],
+                        'price_at_time' => $currentPrice,
+                    ]);
+                }
+
+                $cart->save();
+
+                $updatedCart = $cart->load(['medicines.medicine', 'pharmacy.user']);
+
+                // Calculate totals for the response
+                $updatedCart->total_items = $updatedCart->medicines->sum('quantity') ?? 0;
+                $updatedCart->total_amount = $updatedCart->medicines->sum(function ($item) {
+                    return $item->price_at_time * $item->quantity;
+                }) ?? 0;
+
+                return response()->json(['success' => true, 'message' => 'Added to cart', 'data' => $updatedCart]);
+
+            } catch (\Exception $e) {
+                \Log::error('Cart add item error: ' . $e->getMessage());
                 return response()->json([
                     'success' => false,
-                    'message' => 'Medicine not available at this pharmacy',
-                    'available_stock' => 0,
-                ], 400);
+                    'message' => 'Failed to add item to cart',
+                ], 500);
             }
-
-            if ($stock->quantity < $validated['quantity']) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Only {$stock->quantity} available (requested: {$validated['quantity']})",
-                    'available_stock' => $stock->quantity,
-                ], 400);
-            }
-
-            $medicine = Medicine::find($validated['medicine_id']);
-            if (!$medicine) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Medicine not found',
-                ], 404);
-            }
-
-            // Create or get cart with lock to prevent concurrent modifications
-            $cart = Order::where('user_id', $user->id)
-                ->where('pharmacy_id', $validated['pharmacy_id'])
-                ->where('status', 'cart')
-                ->lockForUpdate()
-                ->first();
-
-            if (!$cart) {
-                $cart = Order::create([
-                    'user_id' => $user->id,
-                    'pharmacy_id' => $validated['pharmacy_id'],
-                    'status' => 'cart',
-                    'total_amount' => 0.00,
-                    'total_items' => 0
-                ]);
-            }
-
-            // Check existing item in cart
-            $existing = $cart->medicines()->where('medicine_id', $validated['medicine_id'])->first();
-            $newQuantity = $existing ? $existing->quantity + $validated['quantity'] : $validated['quantity'];
-
-            // Validate against locked stock
-            if ($newQuantity > $stock->quantity) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Cannot add {$validated['quantity']}. Only {$stock->quantity} available. Current in cart: " . ($existing ? $existing->quantity : 0),
-                    'available_stock' => $stock->quantity,
-                    'current_in_cart' => $existing ? $existing->quantity : 0,
-                ], 400);
-            }
-
-            // Validate quantity limit using CartService
-            $quantityValidation = $this->cartService->validateQuantityLimit($validated['quantity'], $existing);
-            if (!$quantityValidation['valid']) {
-                return response()->json([
-                    'success' => false,
-                    'message' => $quantityValidation['message'],
-                    'current_quantity' => $quantityValidation['current_quantity'],
-                    'requested_quantity' => $quantityValidation['requested_quantity'],
-                    'max_per_medicine' => $quantityValidation['max_per_medicine'],
-                ], 400);
-            }
-
-            $currentPrice = $medicine->price;
-            
-            // Validate price consistency using CartService
-            $priceValidation = $this->cartService->validatePriceConsistency((float) $currentPrice, $existing);
-            if (!$priceValidation['valid']) {
-                return response()->json([
-                    'success' => false,
-                    'message' => $priceValidation['message'],
-                    'old_price' => $priceValidation['old_price'],
-                    'new_price' => $priceValidation['new_price'],
-                    'price_change' => $priceValidation['price_change'],
-                ], 400);
-            }
-
-            // Update or create cart item
-            if ($existing) {
-                $existing->update(['quantity' => $newQuantity]);
-            } else {
-                $cart->medicines()->create([
-                    'medicine_id' => $validated['medicine_id'],
-                    'quantity' => $validated['quantity'],
-                    'price_at_time' => $currentPrice,
-                ]);
-            }
-
-            $cart->save();
-
-            $updatedCart = $cart->load(['medicines.medicine', 'pharmacy.user']);
-            
-            // Calculate totals for the response
-            $updatedCart->total_items = $updatedCart->medicines->sum('quantity') ?? 0;
-            $updatedCart->total_amount = $updatedCart->medicines->sum(function ($item) {
-                return $item->price_at_time * $item->quantity;
-            }) ?? 0;
-            
-            return response()->json(['success' => true, 'message' => 'Added to cart', 'data' => $updatedCart]);
         });
     }
 
     public function update(UpdateCartRequest $request, OrderMedicine $item)
     {
         $user = Auth::user();
-        
+
         // Authorization check: User must be authenticated
         if (!$user) {
             return response()->json([
@@ -269,7 +237,7 @@ class CartController extends Controller
                 'message' => 'Authentication required'
             ], 401);
         }
-        
+
         // Authorization check: User must own the cart item
         if ($item->order->user_id !== $user->id || $item->order->status !== 'cart') {
             return response()->json(['success' => false, 'message' => 'Item not found'], 404);
@@ -278,52 +246,41 @@ class CartController extends Controller
         $validated = $request->validated();
 
         return DB::transaction(function () use ($validated, $item) {
-            // Lock the stock batch row for update
-            $stock = StockBatch::where('pharmacy_id', $item->order->pharmacy_id)
-                ->where('medicine_id', $item->medicine_id)
-                ->lockForUpdate()
-                ->first();
+            try {
+                // Lock the cart to prevent concurrent modifications
+                $cart = $item->order()->lockForUpdate()->first();
 
-            if (!$stock) {
-                return response()->json([
-                    'success' => false, 
-                    'message' => 'Medicine not available at this pharmacy'
-                ], 400);
-            }
+                // Only validate quantity limit (no stock validation here)
+                $quantityValidation = $this->cartService->validateQuantityLimit($validated['quantity']);
+                if (!$quantityValidation['valid']) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => $quantityValidation['message'],
+                        'requested_quantity' => $quantityValidation['requested_quantity'],
+                        'max_per_medicine' => $quantityValidation['max_per_medicine'],
+                    ], 400);
+                }
 
-            if ($stock->quantity < $validated['quantity']) {
-                return response()->json([
-                    'success' => false, 
-                    'message' => "Only {$stock->quantity} available"
-                ], 400);
-            }
+                $item->update(['quantity' => $validated['quantity']]);
+                $cart->save();
 
-            // Lock the cart to prevent concurrent modifications
-            $cart = $item->order()->lockForUpdate()->first();
-            
-            // Validate quantity limit using CartService
-            $quantityValidation = $this->cartService->validateQuantityLimit($validated['quantity']);
-            if (!$quantityValidation['valid']) {
+                $updatedCart = $cart->load(['medicines.medicine', 'pharmacy.user']);
+                return response()->json(['success' => true, 'message' => 'Updated', 'data' => $updatedCart]);
+
+            } catch (\Exception $e) {
+                \Log::error('Cart update item error: ' . $e->getMessage());
                 return response()->json([
                     'success' => false,
-                    'message' => $quantityValidation['message'],
-                    'requested_quantity' => $quantityValidation['requested_quantity'],
-                    'max_per_medicine' => $quantityValidation['max_per_medicine'],
-                ], 400);
+                    'message' => 'Failed to update cart item',
+                ], 500);
             }
-
-            $item->update(['quantity' => $validated['quantity']]);
-            $cart->save();
-
-            $updatedCart = $cart->load(['medicines.medicine', 'pharmacy.user']);
-            return response()->json(['success' => true, 'message' => 'Updated', 'data' => $updatedCart]);
         });
     }
 
     public function destroy(OrderMedicine $item)
     {
         $user = Auth::user();
-        
+
         // Authorization check: User must be authenticated
         if (!$user) {
             return response()->json([
@@ -331,19 +288,19 @@ class CartController extends Controller
                 'message' => 'Authentication required'
             ], 401);
         }
-        
+
         // Null check for order relationship
         if (!$item->order) {
             return response()->json(['success' => false, 'message' => 'Item not found - order missing'], 404);
         }
-        
+
         // Authorization check: User must own the cart item
         if ($item->order->user_id !== $user->id || $item->order->status !== 'cart') {
             return response()->json(['success' => false, 'message' => 'Item not found'], 404);
         }
 
         $cart = $item->order;
-        
+
         try {
             $item->delete();
 
@@ -368,7 +325,7 @@ class CartController extends Controller
    public function clear(Request $request)
 {
     $user = Auth::user();
-    
+
     // Authorization check: User must be authenticated
     if (!$user) {
         return response()->json([
@@ -401,7 +358,7 @@ class CartController extends Controller
             $cart->medicines()->delete();
         }
         $cart->delete();
-        
+
         return response()->json(['success' => true, 'message' => 'Cleared', 'data' => []]);
     } catch (\Exception $e) {
         return response()->json([
@@ -415,7 +372,7 @@ class CartController extends Controller
     public function recommendations(Request $request)
     {
         $user = Auth::user();
-        
+
         // Authorization check: User must be authenticated
         if (!$user) {
             return response()->json([
@@ -423,7 +380,7 @@ class CartController extends Controller
                 'message' => 'Authentication required'
             ], 401);
         }
-        
+
         $pharmacyId = $request->query('pharmacy_id');
 
         // Optimized eager loading to prevent N+1 queries
@@ -452,11 +409,11 @@ class CartController extends Controller
 
         foreach ($validMedicines as $item) {
             $inCartIds->push($item->medicine_id);
-            
+
             if ($item->medicine->therapeuticClasses) {
                 $classes = $classes->merge($item->medicine->therapeuticClasses->pluck('id'));
             }
-            
+
             if ($item->medicine->activeIngredient) {
                 $ingredients->push($item->medicine->activeIngredient->id);
             }

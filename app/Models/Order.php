@@ -28,9 +28,9 @@ class Order extends Model
         'payment_method',
         'billing_address',
         'shipping_address',
-        'total_items', 
+        'total_items',
         'total_amount',
-        'currency', 
+        'currency',
     ];
 
     /**
@@ -42,7 +42,7 @@ class Order extends Model
         'status' => 'string',
         'payment_method' => 'string',
         'total_items' => 'integer',
-        'total_amount' => 'decimal:2',
+        'total_amount' => 'float',
         'currency' => 'string',
     ];
 
@@ -133,7 +133,7 @@ class Order extends Model
                 if (!$order->relationLoaded('medicines')) {
                     $order->load('medicines');
                 }
-                
+
                 $order->total_items = $order->medicines->sum('quantity') ?? 0;
                 $order->total_amount = $order->medicines->sum(function ($item) {
                     return $item->price_at_time * $item->quantity;
@@ -233,13 +233,13 @@ class Order extends Model
         });
 
         $totalItems = $this->medicines->sum('quantity');
-        
+
         // Calculate tax (can be added later)
         $tax = 14/100 * $subtotal;
-        
+
         // Calculate shipping (can be added later)
         $shipping = 30;
-        
+
         $total = $subtotal + $tax + $shipping;
 
         return [
@@ -258,15 +258,15 @@ class Order extends Model
     {
         if ($this->status === 'cart') {
             $totals = $this->calculateTotals();
-            
+
             $this->update([
                 'total_items' => $totals['total_items'],
                 'total_amount' => $totals['total']
             ]);
-            
+
             return true;
         }
-        
+
         return false;
     }
 
@@ -276,7 +276,7 @@ class Order extends Model
     public function updateStatus(string $status): bool
     {
         $validStatuses = ['pending', 'processing', 'completed', 'cancelled'];
-        
+
         if (!in_array($status, $validStatuses)) {
             throw new \Exception('Invalid order status: ' . $status);
         }
@@ -389,7 +389,7 @@ class Order extends Model
         }
 
         $this->updateStatus('cancelled');
-        
+
         // Log cancellation reason
         if ($reason) {
             Log::info("Order {$this->id} cancelled: {$reason}");
@@ -403,7 +403,7 @@ class Order extends Model
      */
 
     /*public function addPrescription(array $prescriptionData): bool
-    {   
+    {
         try {
             $this->prescriptionUploads()->create([
                 'file_path' => $prescriptionData['file_path'],
@@ -476,7 +476,7 @@ class Order extends Model
     public function getSummary(): array
     {
         $totals = $this->calculateTotals();
-        
+
         return [
             'id' => $this->id,
             'status' => $this->status,
